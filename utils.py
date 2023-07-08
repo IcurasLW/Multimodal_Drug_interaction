@@ -54,7 +54,7 @@ class Drug_Features:
 
 
 class EarlyStopping:
-    def __init__(self, delta=0.005, patience=5, path='checkpoint.pt'):
+    def __init__(self, delta=0.05, patience=5, path='checkpoint.pt'):
         self.patience = patience
         self.path = path
         self.epoch = None
@@ -81,40 +81,13 @@ class EarlyStopping:
             self.counter = 0
 
 
-
-
-def data_split(df, val_rate = 0.1):
-    ddis_type = df['interaction'].unique()
-    df_val = pd.DataFrame(columns=df.columns)
-    for ddi in ddis_type:
-        mid_df = df.loc[df['interaction']==ddi].sample(frac=val_rate,axis=0)
-        df_val = pd.concat([df_val, mid_df],axis=0)
-    
-    df_val.reset_index(inplace=True)
-    df_train = df.drop(index=df_val['index'])
-
-    '''
-    test
-    '''
-    sorted_ddis_train = df_train['interaction'].value_counts().to_dict()
-
-    # Shuffle dataframe
-    df_val = df_val.sample(frac=1).reset_index(drop=True)
-    df_train = df_train.sample(frac=1).reset_index(drop=True)
-    
-    df_val = df_val.loc[:, ['id1', 'name1', 'id2', 'name2', 'interaction']]
-    df_train = df_train.loc[:, ['id1', 'name1', 'id2', 'name2', 'interaction']]
-    return df_train, df_val
-
-
-
-def roc_aupr_score(y_true, y_score, average="macro"):
+def roc_aupr_score(args, y_true, y_score, average="macro"):
     
     '''
     y_score: the probality of prediction in shape: [num_sample, num_class]
     y_true: the model predcition in shape: [num_sample, num_class], it's one-hot reprensentation of class
     '''
-    y_one_hot = label_binarize(y=y_true, classes=[i for i in range(213)])
+    y_one_hot = label_binarize(y=y_true, classes=[i for i in range(args.num_class)])
 
     def _binary_roc_aupr_score(y_one_hot, y_score):
         precision, recall, pr_thresholds = precision_recall_curve(y_one_hot, y_score)
@@ -142,7 +115,7 @@ def roc_aupr_score(y_true, y_score, average="macro"):
 
 
 
-def evaluate(y_pred, y_true, mode):
+def evaluate(args, y_pred, y_true, mode):
     '''
     y_pred: Prediction probability
     y_true: index of classes from 0 to 67, Pandas Series 
@@ -175,15 +148,13 @@ def evaluate(y_pred, y_true, mode):
                 'RE_weighted': recall_weighted
                 }
 
-    elif mode == 'val':
-        # 2023/06/01: prediction 是不是预测的类的概率看一下
-        
+    elif mode == 'test':
         auc_score_micro = roc_auc_score(y_score=y_pred_input, y_true=y_true, multi_class='ovr', average='micro')
         auc_score_macro = roc_auc_score(y_score=y_pred_input, y_true=y_true, multi_class='ovr', average='macro')
         auc_score_weighted = roc_auc_score(y_score=y_pred_input, y_true=y_true, multi_class='ovr', average='weighted')
 
-        aupr_score_micro = roc_aupr_score(y_true, y_pred_input, average='micro')
-        aupr_score_macro = roc_aupr_score(y_true, y_pred_input, average='macro')
+        aupr_score_micro = roc_aupr_score(args, y_true, y_pred_input, average='micro')
+        aupr_score_macro = roc_aupr_score(args, y_true, y_pred_input, average='macro')
 
         output = {
                 'acc':acc,
@@ -205,15 +176,29 @@ def evaluate(y_pred, y_true, mode):
     return output
 
 
-def get_newest_file(directory):
-    files = os.listdir(directory)
-    if not files:
-        return None
 
-    # Sort the files based on modification time in descending order
-    files.sort(key=lambda x: os.path.getmtime(os.path.join(directory, x)), reverse=True)
-    newest_file = files[0]
-    return newest_file
+
+def create_folder(folder_path):
+    if not os.path.exists(folder_path):
+        os.makedirs(folder_path)
+
+def get_newest_folder(parent_folder_path):
+    subdirectories = [f for f in os.listdir(parent_folder_path) if os.path.isdir(os.path.join(parent_folder_path, f))]
+    if subdirectories:
+        subdirectories.sort(key=lambda x: os.path.getctime(os.path.join(parent_folder_path, x)), reverse=True)
+        newest_folder = subdirectories[0]
+        return newest_folder
+
+def get_newest_file(directory, type=".pth"):
+    if os.listdir(directory) == []:
+        raise Exception('No model file to read')
+
+    files = os.listdir(directory)
+    pth_files = [file for file in files if file.endswith(type)]
+    pth_files.sort(key=lambda x: os.path.getmtime(os.path.join(directory, x)), reverse=True)
+    newest_pth_file = pth_files[0]
+    return newest_pth_file
+
 
 
 
@@ -225,18 +210,21 @@ def sample_data(data_path, output_filename, sample_rate):
 
     for ddi in ddis_type:
         mid_df = df.loc[df['interaction']==ddi].sample(frac=sample_rate,axis=0)
+        if mid_df.shape[0] == 1:
+            mid_df = df.loc[df['interaction']==ddi]
         df_ddis_sample = pd.concat([df_ddis_sample, mid_df],axis=0)
 
     df_ddis_sample.reset_index(drop=False, inplace=True)
     df_filtered = df.drop(index=df_ddis_sample['Unnamed: 0'])
+    df_filtered.to_csv(output_filename)
 
 
 
-def save_results(fold_num, metrics:dict, mode:str):
+def save_results(save_path, fold_num, metrics:dict, mode:str, loss, num_cls):
     '''
     Each row is one epoch
     '''
-    output_filename = f'fold_{fold_num}_{mode}_results.csv'
+    output_filename = save_path + f'fold_{fold_num}_{mode}_{num_cls}_{loss}_results.csv'
 
     # save train results
     try:
@@ -251,6 +239,7 @@ def save_results(fold_num, metrics:dict, mode:str):
 
     except:
         print('file not exists')
+        create_folder(save_path)
         with open(output_filename, 'w', newline='') as log:
             writer = csv.DictWriter(log, fieldnames=metrics.keys())
             writer.writeheader()
@@ -259,48 +248,109 @@ def save_results(fold_num, metrics:dict, mode:str):
             
             
 
-def make_features_matrix(feature_data_path):
+# def make_features_matrix(args, feature_data_path):
+#     '''
+#     Input: Features type, features data
+#     Convert the 
+#     Output: Enzymes, target embeddings 
+#     '''
+#     df = pd.read_csv(feature_data_path)
+#     df = df.dropna(axis=0) 
+#     fn_1 = lambda row: row.split('|')
+#     df['Targets'] = df['Targets'].apply(fn_1)
+#     df['Enzymes'] = df['Enzymes'].apply(fn_1)
+    
+#     # Find the unique elements of targets and enzymes
+#     targets_set = set()
+#     enzymes_set = set()
+#     for each in df['Targets'].to_list():
+#         targets_set = targets_set | set(each)
+        
+#     for each in df['Enzymes'].to_list():
+#         enzymes_set = enzymes_set | set(each)
+
+#     targets_set = list(targets_set)
+#     enzymes_set = list(enzymes_set)
+
+#     # targets features matrix 
+#     targets_drugs_matrix = []
+#     for each in df['Targets'].to_list():
+#         cur_drug = [0 for _ in range(len(targets_set))]
+#         for i in each:
+#             index = targets_set.index(i)
+#             cur_drug[index] = 1
+#         targets_drugs_matrix.append(cur_drug)
+
+#     # enzymes features matrix 
+#     enzymes_drugs_matrix = []
+#     for each in df['Enzymes'].to_list():
+#         cur_drug = [0 for _ in range(len(enzymes_set))]
+#         for i in each:
+#             index = enzymes_set.index(i)
+#             cur_drug[index] = 1
+#         enzymes_drugs_matrix.append(cur_drug)
+
+#     return targets_drugs_matrix, enzymes_drugs_matrix
+
+
+
+def make_features_matrix(args, feature_data_path):
     '''
     Input: Features type, features data
     Convert the 
     Output: Enzymes, target embeddings 
     '''
+    
     df = pd.read_csv(feature_data_path)
     df = df.dropna(axis=0) 
     fn_1 = lambda row: row.split('|')
-    df['Targets'] = df['Targets'].apply(fn_1)
-    df['Enzymes'] = df['Enzymes'].apply(fn_1)
     
-    # Find the unique elements of targets and enzymes
-    targets_set = set()
-    enzymes_set = set()
-    for each in df['Targets'].to_list():
-        targets_set = targets_set | set(each)
+    
+    # get target matrix
+    if 'target' in args.feature_path:
+        df['Targets'] = df['Targets'].apply(fn_1)
+        targets_set = set()
+        for each in df['Targets'].to_list():
+            targets_set = targets_set | set(each)
+            
+        targets_set = list(targets_set)
         
-    for each in df['Enzymes'].to_list():
-        enzymes_set = enzymes_set | set(each)
+        # targets features matrix 
+        targets_drugs_matrix = []
+        for each in df['Targets'].to_list():
+            cur_drug = [0 for _ in range(len(targets_set))]
+            for i in each:
+                index = targets_set.index(i)
+                cur_drug[index] = 1
+            targets_drugs_matrix.append(cur_drug)
+        
+    else:
+        targets_drugs_matrix = None
 
-    targets_set = list(targets_set)
-    enzymes_set = list(enzymes_set)
 
-    # targets features matrix 
-    targets_drugs_matrix = []
-    for each in df['Targets'].to_list():
-        cur_drug = [0 for _ in range(len(targets_set))]
-        for i in each:
-            index = targets_set.index(i)
-            cur_drug[index] = 1
-        targets_drugs_matrix.append(cur_drug)
+    # get enzyme matrix
+    if 'enzyme' in args.feature_path:
+        
+        df['Enzymes'] = df['Enzymes'].apply(fn_1)
+    
+        enzymes_set = set()
+        for each in df['Enzymes'].to_list():
+            enzymes_set = enzymes_set | set(each)
 
-    # enzymes features matrix 
-    enzymes_drugs_matrix = []
-    for each in df['Enzymes'].to_list():
-        cur_drug = [0 for _ in range(len(enzymes_set))]
-        for i in each:
-            index = enzymes_set.index(i)
-            cur_drug[index] = 1
-        enzymes_drugs_matrix.append(cur_drug)
-
+        enzymes_set = list(enzymes_set)
+        
+        # enzymes features matrix 
+        enzymes_drugs_matrix = []
+        for each in df['Enzymes'].to_list():
+            cur_drug = [0 for _ in range(len(enzymes_set))]
+            for i in each:
+                index = enzymes_set.index(i)
+                cur_drug[index] = 1
+            enzymes_drugs_matrix.append(cur_drug)
+    else:
+        enzymes_drugs_matrix = None
+        
+        
     return targets_drugs_matrix, enzymes_drugs_matrix
 
 
@@ -313,10 +363,20 @@ def similarity_matrix(enzymes_matrix, targets_matrix):
         denominator = np.ones(np.shape(matrix)) * matrix.T + matrix * np.ones(np.shape(matrix.T)) - matrix * matrix.T
         return numerator / denominator
     
-    enzymes_sim_matrix = torch.tensor(Jaccard(enzymes_matrix))
-    targets_sim_matrix = torch.tensor(Jaccard(targets_matrix))
-
+    # Get enzyme similarity matrix
+    if enzymes_matrix != None:
+        enzymes_sim_matrix = torch.tensor(Jaccard(enzymes_matrix))
+    else:
+        enzymes_sim_matrix = None
+    
+    # Target similarity matrix
+    if targets_matrix != None:
+        targets_sim_matrix = torch.tensor(Jaccard(targets_matrix))
+    else:
+        targets_sim_matrix = None
+        
     return enzymes_sim_matrix, targets_sim_matrix
+
 
 
 def make_label(df):
@@ -343,3 +403,16 @@ def split_train_test(df, test_size):
     test_df = df.loc[~df.index.isin(train_idx)].reset_index(drop=True)
     
     return train_df, test_df
+
+
+def findthreshold(df, tail_factor=0.8):
+    value_counts = df['interaction'].value_counts().values
+    sum_num = sum(value_counts)
+    class_rate = value_counts/sum_num
+    for i in range(len(class_rate)):
+        if tail_factor >= sum(class_rate[:i]):
+            continue
+        else:
+            threshold_point = i
+            break
+    return threshold_point
